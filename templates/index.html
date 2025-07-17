@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Crime Network Analyzer</title>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 0; padding: 20px; }
+        #graph { width: 100%; height: 600px; border: 1px solid #ccc; }
+        .node { stroke: #fff; stroke-width: 1.5px; }
+        .link { stroke: #999; stroke-opacity: 0.6; }
+        .tooltip { position: absolute; padding: 8px; background: rgba(0,0,0,0.8); color: #fff; border-radius: 4px; pointer-events: none; }
+        .query-panel { margin-bottom: 20px; }
+        text { font-size: 12px; pointer-events: none; }
+    </style>
+</head>
+<body>
+    <h1>Crime Network Analyzer</h1>
+    
+    <div class="query-panel">
+        <h3>Run Custom Query</h3>
+        <textarea id="cypher-query" rows="4" style="width: 100%;">MATCH (n)-[r]->(m) RETURN n, r, m LIMIT 50</textarea>
+        <button onclick="runQuery()">Run Query</button>
+        <div id="query-results" style="margin-top: 10px;"></div>
+    </div>
+
+    <h3>Network Graph</h3>
+    <div id="graph"></div>
+
+    <script>
+        const width = document.getElementById('graph').clientWidth;
+        const height = 600;
+        
+        const svg = d3.select("#graph")
+            .append("svg")
+            .attr("width", "100%")
+            .attr("height", height);
+            
+        const tooltip = d3.select("body").append("div")
+            .attr("class", "tooltip")
+            .style("opacity", 0);
+            
+        function updateGraph(data) {
+            const links = data.links;
+            const nodes = data.nodes;
+            
+            // Clear previous graph
+            svg.selectAll("*").remove();
+            
+            // Create a force simulation
+            const simulation = d3.forceSimulation(nodes)
+                .force("link", d3.forceLink(links).id(d => d.id).distance(100))
+                .force("charge", d3.forceManyBody().strength(-300))
+                .force("center", d3.forceCenter(width / 2, height / 2))
+                .force("collision", d3.forceCollide().radius(40));
+                
+            // Create links
+            const link = svg.append("g")
+                .selectAll("line")
+                .data(links)
+                .enter().append("line")
+                .attr("class", "link")
+                .attr("stroke-width", 2);
+                
+            // Create nodes
+            const node = svg.append("g")
+                .selectAll("circle")
+                .data(nodes)
+                .enter().append("circle")
+                .attr("class", "node")
+                .attr("r", 10)
+                .attr("fill", d => {
+                    if (d.labels.includes('Person')) return '#ff7f0e';
+                    if (d.labels.includes('Location')) return '#1f77b4';
+                    if (d.labels.includes('Crime')) return '#d62728';
+                    return '#ccc';
+                })
+                .on("mouseover", (event, d) => {
+                    let html = `<strong>${d.labels[0]}</strong><br>`;
+                    for (const [key, value] of Object.entries(d.properties)) {
+                        html += `${key}: ${value}<br>`;
+                    }
+                    tooltip.transition().duration(200).style("opacity", .9);
+                    tooltip.html(html)
+                        .style("left", (event.pageX + 10) + "px")
+                        .style("top", (event.pageY - 28) + "px");
+                })
+                .on("mouseout", () => {
+                    tooltip.transition().duration(500).style("opacity", 0);
+                })
+                .call(d3.drag()
+                    .on("start", dragstarted)
+                    .on("drag", dragged)
+                    .on("end", dragended));
+                
+            // Add labels
+            const labels = svg.append("g")
+                .selectAll("text")
+                .data(nodes)
+                .enter().append("text")
+                .text(d => d.properties.name || d.properties.type || d.id)
+                .attr("font-size", 10)
+                .attr("dx", 12)
+                .attr("dy", ".35em");
+                
+            // Add link labels
+            const linkLabels = svg.append("g")
+                .selectAll("text")
+                .data(links)
+                .enter().append("text")
+                .text(d => d.type)
+                .attr("font-size", 8)
+                .attr("fill", "#666");
+                
+            // Update positions on each tick
+            simulation.on("tick", () => {
+                link
+                    .attr("x1", d => d.source.x)
+                    .attr("y1", d => d.source.y)
+                    .attr("x2", d => d.target.x)
+                    .attr("y2", d => d.target.y);
+                    
+                node
+                    .attr("cx", d => d.x)
+                    .attr("cy", d => d.y);
+                    
+                labels
+                    .attr("x", d => d.x + 12)
+                    .attr("y", d => d.y + 4);
+                    
+                linkLabels
+                    .attr("x", d => (d.source.x + d.target.x) / 2)
+                    .attr("y", d => (d.source.y + d.target.y) / 2);
+            });
+            
+            // Drag functions
+            function dragstarted(event, d) {
+                if (!event.active) simulation.alphaTarget(0.3).restart();
+                d.fx = d.x;
+                d.fy = d.y;
+            }
+            
+            function dragged(event, d) {
+                d.fx = event.x;
+                d.fy = event.y;
+            }
+            
+            function dragended(event, d) {
+                if (!event.active) simulation.alphaTarget(0);
+                d.fx = null;
+                d.fy = null;
+            }
+        }
+        
+        function runQuery() {
+            const query = document.getElementById('cypher-query').value;
+            const resultsDiv = document.getElementById('query-results');
+            
+            fetch('/api/query', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ query: query })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    resultsDiv.innerHTML = '<strong>Results:</strong><pre>' + 
+                        JSON.stringify(data.records, null, 2) + '</pre>';
+                } else {
+                    resultsDiv.innerHTML = '<strong>Error:</strong> ' + data.error;
+                }
+            })
+            .catch(error => {
+                resultsDiv.innerHTML = '<strong>Error:</strong> ' + error;
+            });
+        }
+        
+        // Initial load
+        fetch('/api/graph')
+            .then(response => response.json())
+            .then(data => updateGraph(data));
+    </script>
+</body>
+</html>
